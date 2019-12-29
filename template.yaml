@@ -1,0 +1,193 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: create codepipeline
+
+Parameters:
+  S3BucketName:
+    # Default: 
+    Type: String
+  S3BucketIndexDocument:
+    # Default: 
+    Type: String
+  S3BucketErrorDocument:
+    # Default: 
+    Type: String
+  ArtifactBucketName:
+    # Default: 
+    Type: String
+  GitHubAccountName:
+    # Default: 
+    Type: String
+  GitHubRepositoryName:
+    # Default: 
+    Type: String
+  GitHubBranchName:
+    # Default: 
+    Type: String
+  GitHubOAuthToken:
+    # Default: 
+    Type: String
+
+Resources:
+  S3BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref S3Bucket
+      PolicyDocument:
+        Statement:
+          Action:
+             - s3:GetObject
+          Effect: Allow
+          Resource: !Sub "arn:aws:s3:::${S3BucketName}/*"
+          Principal: "*"
+
+  S3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref S3BucketName
+      AccessControl: PublicRead
+      WebsiteConfiguration:
+        IndexDocument: !Ref S3BucketIndexDocument
+        ErrorDocument: !Ref S3BucketErrorDocument
+
+  ArtifactBucket:
+    Type: AWS::S3::Bucket
+    Properties: 
+      BucketName: !Ref ArtifactBucketName
+
+  CodeBuildServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: /
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "*"
+                Effect: Allow
+              - Action:
+                  - s3:*
+                Resource:
+                  - !GetAtt S3Bucket.Arn
+                  - !GetAtt ArtifactBucket.Arn
+                  - !Join [ "", [ !GetAtt S3Bucket.Arn, "/*" ] ]
+                  - !Join [ "", [ !GetAtt ArtifactBucket.Arn, "/*" ] ]
+                Effect: Allow
+
+  CodePipelineServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: /
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codepipeline.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Action:
+                  - iam:PassRole
+                Resource: '*'
+                Effect: Allow
+                Condition:
+                  StringEqualsIfExists:
+                    iam:PassedToService:
+                      - cloudformation.amazonaws.com
+              - Action:
+                  - cloudformation:*
+                Resource: '*'
+                Effect: Allow
+              - Action:
+                  - s3:*
+                Resource:
+                  - !GetAtt S3Bucket.Arn
+                  - !GetAtt ArtifactBucket.Arn
+                  - !Join [ "", [ !GetAtt S3Bucket.Arn, "/*" ] ]
+                  - !Join [ "", [ !GetAtt ArtifactBucket.Arn, "/*" ] ]
+                Effect: Allow
+              - Action:
+                  - codebuild:*
+                Resource:
+                  - "*"
+                Effect: Allow
+
+  # PipelineWebhook:
+
+  CodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Ref AWS::StackName
+      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
+      Artifacts:
+        Type: CODEPIPELINE
+      Source:
+        Type: CODEPIPELINE
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/amazonlinux2-x86_64-standard:1.0
+        PrivilegedMode: true
+        EnvironmentVariables:
+          - Name: DEPLOY_BUCKET_NAME
+            Value: !Ref S3Bucket
+
+  CodePipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      RoleArn: !GetAtt CodePipelineServiceRole.Arn
+      ArtifactStore:
+        Type: S3
+        Location: !Ref ArtifactBucket
+      Name: !Ref AWS::StackName
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: SourceAction
+              ActionTypeId:
+                Category: Source
+                Owner: ThirdParty
+                Version: 1
+                Provider: GitHub
+              Configuration:
+                Owner: !Ref GitHubAccountName
+                Repo: !Ref GitHubRepositoryName
+                PollForSourceChanges: false
+                Branch: !Ref GitHubBranchName
+                OAuthToken: !Ref GitHubOAuthToken
+              RunOrder: 1
+              OutputArtifacts:
+                - Name: App
+        - Name: Build
+          Actions:
+            - Name: Build
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Version: 1
+                Provider: CodeBuild
+              Configuration:
+                ProjectName: !Ref CodeBuildProject
+              RunOrder: 1
+              Region: ap-northeast-1              
+              InputArtifacts:
+                - Name: App
+
+Outputs:
+  WebsiteURL:
+    Value: !GetAtt S3Bucket.WebsiteURL
