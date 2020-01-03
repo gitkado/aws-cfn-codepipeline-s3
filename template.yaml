@@ -8,9 +8,6 @@ Parameters:
   S3BucketIndexDocument:
     # Default: 
     Type: String
-  S3BucketErrorDocument:
-    # Default: 
-    Type: String
   ArtifactBucketName:
     # Default: 
     Type: String
@@ -34,25 +31,44 @@ Resources:
       Bucket: !Ref S3Bucket
       PolicyDocument:
         Statement:
-          Action:
-             - s3:GetObject
-          Effect: Allow
-          Resource: !Sub "arn:aws:s3:::${S3BucketName}/*"
-          Principal: "*"
+          - Action: s3:GetObject
+            Effect: Allow
+            Resource: !Sub "arn:aws:s3:::${S3BucketName}/*"
+            Principal:
+              AWS: !Sub arn:aws:iam::cloudfront:user/CloudFront Origin Access Identity ${CloudFrontOriginAccessIdentity}
 
   S3Bucket:
     Type: AWS::S3::Bucket
     Properties:
       BucketName: !Ref S3BucketName
-      AccessControl: PublicRead
-      WebsiteConfiguration:
-        IndexDocument: !Ref S3BucketIndexDocument
-        ErrorDocument: !Ref S3BucketErrorDocument
 
   ArtifactBucket:
     Type: AWS::S3::Bucket
     Properties: 
       BucketName: !Ref ArtifactBucketName
+
+  CloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Origins:
+        - Id: S3Origin
+          DomainName: !GetAtt S3Bucket.DomainName
+          S3OriginConfig:
+            OriginAccessIdentity: !Sub origin-access-identity/cloudfront/${CloudFrontOriginAccessIdentity}
+        Enabled: true
+        DefaultRootObject: !Ref S3BucketIndexDocument
+        DefaultCacheBehavior:
+          TargetOriginId: S3Origin
+          ForwardedValues:
+            QueryString: false
+          ViewerProtocolPolicy: redirect-to-https
+
+  CloudFrontOriginAccessIdentity:
+    Type: AWS::CloudFront::CloudFrontOriginAccessIdentity
+    Properties:
+      CloudFrontOriginAccessIdentityConfig:
+        Comment: !Ref AWS::StackName
 
   CodeBuildServiceRole:
     Type: AWS::IAM::Role
@@ -74,6 +90,8 @@ Resources:
                   - logs:CreateLogGroup
                   - logs:CreateLogStream
                   - logs:PutLogEvents
+                  - sts:*
+                  - cloudfront:*
                 Resource: "*"
                 Effect: Allow
               - Action:
@@ -127,7 +145,28 @@ Resources:
                   - "*"
                 Effect: Allow
 
-  # PipelineWebhook:
+  GitHubSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      GenerateSecretString:
+        SecretStringTemplate: '{}'
+        GenerateStringKey: SecretToken
+        ExcludePunctuation: true
+        PasswordLength: 40
+
+  PipelineWebhook:
+    Type: AWS::CodePipeline::Webhook
+    Properties:
+      Authentication: GITHUB_HMAC
+      AuthenticationConfiguration:
+        SecretToken: !Join ['', ['{{resolve:secretsmanager:', !Ref GitHubSecret, ':SecretString:SecretToken}}' ]]
+      Filters:
+        - JsonPath: "$.ref"
+          MatchEquals: 'refs/heads/{Branch}'
+      TargetPipeline: !Ref CodePipeline
+      TargetAction: SourceAction
+      TargetPipelineVersion: !GetAtt CodePipeline.Version
+      RegisterWithThirdParty: true
 
   CodeBuildProject:
     Type: AWS::CodeBuild::Project
@@ -146,6 +185,8 @@ Resources:
         EnvironmentVariables:
           - Name: DEPLOY_BUCKET_NAME
             Value: !Ref S3Bucket
+          - Name: CLOUDFRONT_DISTRIBUTION_ID
+            Value: !Ref CloudFrontDistribution
 
   CodePipeline:
     Type: AWS::CodePipeline::Pipeline
@@ -190,4 +231,4 @@ Resources:
 
 Outputs:
   WebsiteURL:
-    Value: !GetAtt S3Bucket.WebsiteURL
+    Value: !Join [ "", [ "https://", !GetAtt [ CloudFrontDistribution, DomainName ]]]
