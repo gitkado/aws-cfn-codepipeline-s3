@@ -23,6 +23,9 @@ Parameters:
   GitHubOAuthToken:
     # Default: 
     Type: String
+  BuildEnvApiBaseUrl:
+    # Default: 
+    Type: String
 
 Resources:
   S3BucketPolicy:
@@ -187,6 +190,8 @@ Resources:
             Value: !Ref S3Bucket
           - Name: CLOUDFRONT_DISTRIBUTION_ID
             Value: !Ref CloudFrontDistribution
+          - Name: API_BASE_URL
+            Value: !Ref BuildEnvApiBaseUrl
 
   CodePipeline:
     Type: AWS::CodePipeline::Pipeline
